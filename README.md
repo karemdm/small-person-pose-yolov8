@@ -70,7 +70,7 @@ window_size = 640
 overlap = 0.2
 
 process_video(video_path, model_path, window_size, overlap, output_path)
-
+```
 
 ---
 
