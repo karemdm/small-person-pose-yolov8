@@ -2,7 +2,8 @@ import cv2
 import torch
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
-from torchvision.ops import box_iou
+# from torchvision.ops import box_iou
+import torchvision.ops as ops
 
 
 def sliding_window(image, window_size, overlap):
@@ -52,81 +53,31 @@ def adjust_keypoints(keypoints, x_offset, y_offset):
     return keypoints
 
 
-def merge_detections(all_boxes, all_keypoints, iou_threshold=0.8):
-    """
-    Mescla detecções redundantes usando IOU para caixas delimitadoras.
-    """
-    if len(all_boxes) == 0:
-        return None, None
+def merge_detections(all_boxes, all_keypoints, iou_threshold=0.5):
+    target_device = all_boxes[0].device if len(all_boxes) > 0 else 'cpu'
 
-    # Concatenar as caixas e os keypoints em um tensor
-    boxes = torch.cat(all_boxes, dim=0)
-    keypoints = torch.cat(all_keypoints, dim=0) if len(all_keypoints) > 0 else torch.empty(0, 0, device=boxes.device)
+    # Move boxes e keypoints para o mesmo dispositivo
+    all_boxes = [box.to(target_device) for box in all_boxes]
+    all_keypoints = [keypoint.to(target_device) for keypoint in all_keypoints]
 
-    # Calcular IOU entre as caixas
-    ious = calculate_ious(boxes)
+    # Concatena as boxes e keypoints
+    combined_boxes = torch.cat(all_boxes, dim=0) if len(all_boxes) > 0 else torch.empty(0, device=target_device)
+    combined_keypoints = torch.cat(all_keypoints, dim=0) if len(all_keypoints) > 0 else torch.empty(0, device=target_device)
 
-    # Inicializar o vetor de keep como True para todas as caixas
-    keep = torch.ones(boxes.size(0), dtype=torch.bool, device=boxes.device)
+    # Certifique-se de que a caixa tenha apenas 4 colunas: [x1, y1, x2, y2]
+    # Se a caixa tiver mais de 4 colunas, vamos considerar apenas as primeiras 4 colunas para NMS.
+    boxes = combined_boxes[:, :4]  # Seleciona apenas as 4 primeiras colunas (coordenadas da caixa)
+    scores = combined_boxes[:, 5]  # Assume que a 5ª coluna é a confiança
 
-    # Se houver mais de uma caixa, calcular o keep usando o IOU, considerando o limiar
-    if boxes.size(0) > 1:
-        for i in range(boxes.size(0)):
-            for j in range(i + 1, boxes.size(0)):
-                if ious[i, j] > iou_threshold:
-                    # Mantenha a caixa com maior confiança (não descartar indiscriminadamente)
-                    if boxes[i, 4] < boxes[j, 4]:  # Comparando a confiança
-                        keep[i] = False  # Descartar a caixa i se o IOU for maior e a confiança de j for maior
-                    else:
-                        keep[j] = False  # Descartar a caixa j se o IOU for maior e a confiança de i for maior
+    # Filtragem por IoU (remove boxes com alta sobreposição)
+    keep = ops.nms(boxes, scores, iou_threshold)
+    filtered_boxes = combined_boxes[keep]
+    filtered_keypoints = combined_keypoints[keep]
 
-    # Garantir que ao menos a primeira caixa seja mantida
-    if keep.sum() == 0:
-        keep[0] = True
-
-    # Selecionar as caixas e os keypoints que foram mantidos
-    kept_boxes = boxes[keep]
-    kept_keypoints = keypoints[keep] if keypoints.size(0) > 0 else torch.empty(0, 0, device=boxes.device)
-
-    return kept_boxes, kept_keypoints
-
-
-def calculate_ious(boxes):
-    """
-    Calcula o IOU entre as caixas. Aqui, vamos assumir que `boxes` tem a forma (N, 4),
-    onde N é o número de caixas e cada caixa é representada por [xmin, ymin, xmax, ymax].
-    """
-    n = boxes.size(0)
-    ious = torch.zeros((n, n), dtype=torch.float32, device=boxes.device)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            # Calcular a interseção
-            inter_xmin = torch.max(boxes[i, 0], boxes[j, 0])
-            inter_ymin = torch.max(boxes[i, 1], boxes[j, 1])
-            inter_xmax = torch.min(boxes[i, 2], boxes[j, 2])
-            inter_ymax = torch.min(boxes[i, 3], boxes[j, 3])
-
-            inter_area = torch.max(inter_xmax - inter_xmin, torch.tensor(0.0, device=boxes.device)) * \
-                         torch.max(inter_ymax - inter_ymin, torch.tensor(0.0, device=boxes.device))
-
-            # Calcular a área de cada caixa
-            area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
-            area_j = (boxes[j, 2] - boxes[j, 0]) * (boxes[j, 3] - boxes[j, 1])
-
-            # Calcular o IOU
-            union_area = area_i + area_j - inter_area
-            iou = inter_area / union_area if union_area > 0 else torch.tensor(0.0, device=boxes.device)
-            ious[i, j] = iou
-            ious[j, i] = iou  # IOU é simétrico
-
-    return ious
+    return filtered_boxes, filtered_keypoints
 
 
 def process_video(video_path, model_path, window_size, overlap, output_path):
-    """
-    Processa o vídeo aplicando o modelo YOLOv8-Pose em janelas deslizantes.
-    """
     model = YOLO(model_path)
     cap = cv2.VideoCapture(video_path)
 
@@ -138,9 +89,10 @@ def process_video(video_path, model_path, window_size, overlap, output_path):
 
     frame_number = 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 500)
+
     while True:
         ret, frame = cap.read()
-        if not ret or frame_number == 800:
+        if not ret or frame_number == 100:
             break
 
         all_boxes = []
@@ -148,38 +100,41 @@ def process_video(video_path, model_path, window_size, overlap, output_path):
 
         for x1, y1, x2, y2 in sliding_window(frame, window_size, overlap):
             window = frame[y1:y2, x1:x2]
-            results = model.predict(window, device=0, verbose=False, conf=0.3, iou=0.8)
+            results = model.track(window, device=0, verbose=False, conf=0.3, iou=0.8)
 
             non_zero_keypoints = (results[0].keypoints.xy != 0).sum(dim=(1, 2))
-            if results[0].boxes is not None and len(results[0].boxes) > 0 \
-                    and (non_zero_keypoints >= 2).any():
-                    # and not torch.all(results[0].keypoints.xy == 0):
+            if results[0].boxes is not None and len(results[0].boxes) > 0 and (non_zero_keypoints >= 2).any():
                 boxes = results[0].boxes.xyxy
                 keypoints = results[0].keypoints.xy
 
                 # Adicionando confiança e ID da classe
                 confidence = results[0].boxes.conf  # Confiança das detecções
-                class_id = results[0].boxes.cls     # ID das classes (no caso, pessoas)
+                class_name = results[0].boxes.cls # num das classes (no caso, pessoas)
+                class_id = results[0].boxes.id # ID do tracker
 
                 boxes = adjust_coordinates(boxes, x1, y1)
                 keypoints = adjust_keypoints(keypoints, x1, y1)
 
                 # Adicionando confiança e ID da classe
-                all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_id.unsqueeze(1)), dim=1))
+                all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
                 all_keypoints.append(keypoints)
 
-        combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
+        # Verifique se all_boxes foi corretamente concatenado para evitar erros
+        if len(all_boxes) > 0:
+            combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
 
-        if combined_boxes is not None and combined_boxes.size(0) > 0 and \
-            combined_keypoints is not None and not (combined_keypoints == 0).all():
-            results = Results(
-                orig_img=frame,
-                boxes=combined_boxes,
-                keypoints=combined_keypoints,
-                names={0: "person"},
-                path=""
-            )
-            plotted_frame = results.plot()
+            if combined_boxes is not None and combined_boxes.size(0) > 0 and \
+                combined_keypoints is not None and not (combined_keypoints == 0).all():
+                results = Results(
+                    orig_img=frame,
+                    boxes=combined_boxes,
+                    keypoints=combined_keypoints,
+                    names={0: "person"},
+                    path=""
+                )
+                plotted_frame = results.plot()
+            else:
+                plotted_frame = frame
         else:
             plotted_frame = frame
 
@@ -215,7 +170,7 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
 
     while True:
         ret, frame = cap.read()
-        if not ret or frame_number == 800:
+        if not ret or frame_number == 100:
             break
 
         frames_batch.append(frame)
@@ -232,7 +187,8 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
 
                 for x1, y1, x2, y2 in sliding_window(frame, window_size, overlap):
                     window = frame[y1:y2, x1:x2]
-                    results = model.predict(window, device=0, verbose=False, conf=0.3, iou=0.8)
+                    # results = model.predict(window, device=0, verbose=False, conf=0.3, iou=0.8)
+                    results = model.track(window, device=0, verbose=False, conf=0.3, iou=0.8)
 
                     non_zero_keypoints = (results[0].keypoints.xy != 0).sum(dim=(1, 2))
                     if results[0].boxes is not None and len(results[0].boxes) > 0 \
@@ -242,13 +198,14 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
 
                         # Adicionando confiança e ID da classe
                         confidence = results[0].boxes.conf  # Confiança das detecções
-                        class_id = results[0].boxes.cls     # ID das classes (no caso, pessoas)
+                        class_name = results[0].boxes.cls # num das classes (no caso, pessoas)
+                        class_id = results[0].boxes.id # ID do tracker
 
                         boxes = adjust_coordinates(boxes, x1, y1)
                         keypoints = adjust_keypoints(keypoints, x1, y1)
 
                         # Adicionando confiança e ID da classe
-                        all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_id.unsqueeze(1)), dim=1))
+                        all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
                         all_keypoints.append(keypoints)
 
                 combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
@@ -290,6 +247,6 @@ output_path = "processed_video.mp4"
 window_size = 640
 overlap = 0.2
 
-# process_video(video_path, model_path, window_size, overlap, output_path)
-process_video_batch(video_path, model_path, window_size, overlap, output_path)
+process_video(video_path, model_path, window_size, overlap, output_path)
+# process_video_batch(video_path, model_path, window_size, overlap, output_path)
 
