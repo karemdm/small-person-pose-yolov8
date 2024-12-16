@@ -135,12 +135,14 @@ process_video(video_path, model, model_pose, output_path)
 ```
 
 ###### Explanation of Parameters
-`video_path`: The path to the input video.
-`model`: The YOLO model used for object detection.
-`model_pose`: The YOLO model used for pose estimation.
-`output_path`: The path where the processed video will be saved.
-Notes
+- `video_path`: The path to the input video.
+- `model`: The YOLO model used for object detection.
+- `model_pose`: The YOLO model used for pose estimation.
+- `output_path`: The path where the processed video will be saved.
+
+Notes:
 The code processes the video starting from frame 500 to frame 800. You can adjust these values in the process_video() function by modifying cap.set(cv2.CAP_PROP_POS_FRAMES, 500) and the loop condition.
+
 The padding around each detection can be adjusted by changing the padding parameter in the dynamic_crop_and_recombine() function.
 
 
