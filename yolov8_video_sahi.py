@@ -7,14 +7,19 @@ from torchvision.ops import box_iou
 
 def sliding_window(image, window_size, overlap):
     """
-    Gera coordenadas de janelas deslizantes na imagem.
+    Gera coordenadas de janelas deslizantes na imagem,
+    garantindo que os pixels das bordas também sejam processados.
     """
     step = int(window_size * (1 - overlap))
     h, w, _ = image.shape
 
-    for y in range(0, h - window_size + 1, step):
-        for x in range(0, w - window_size + 1, step):
-            yield x, y, x + window_size, y + window_size
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            x1 = x
+            y1 = y
+            x2 = min(x + window_size, w)  # Garante que a janela não exceda a largura da imagem
+            y2 = min(y + window_size, h)  # Garante que a janela não exceda a altura da imagem
+            yield x1, y1, x2, y2
 
 
 def adjust_coordinates(detections, x_offset, y_offset):
@@ -25,21 +30,25 @@ def adjust_coordinates(detections, x_offset, y_offset):
         return detections
 
     detections = detections.clone()
-    detections[:, [0, 2]] += x_offset
-    detections[:, [1, 3]] += y_offset
+    detections[:, [0, 2]] += x_offset  # Ajusta x_min e x_max
+    detections[:, [1, 3]] += y_offset  # Ajusta y_min e y_max
     return detections
 
 
 def adjust_keypoints(keypoints, x_offset, y_offset):
     """
-    Ajusta as coordenadas dos keypoints para as dimensões originais.
+    Ajusta as coordenadas dos keypoints para as dimensões originais,
+    ignorando valores de 0 (em x e y).
     """
     if keypoints is None or keypoints.size(0) == 0:
         return keypoints
 
     keypoints = keypoints.clone()
-    keypoints[:, :, 0] += x_offset
-    keypoints[:, :, 1] += y_offset
+
+    # Somar o offset apenas onde os valores de keypoints não são 0
+    keypoints[:, :, 0] = torch.where(keypoints[:, :, 0] != 0, keypoints[:, :, 0] + x_offset, keypoints[:, :, 0])
+    keypoints[:, :, 1] = torch.where(keypoints[:, :, 1] != 0, keypoints[:, :, 1] + y_offset, keypoints[:, :, 1])
+
     return keypoints
 
 
@@ -139,7 +148,7 @@ def process_video(video_path, model_path, window_size, overlap, output_path):
 
         for x1, y1, x2, y2 in sliding_window(frame, window_size, overlap):
             window = frame[y1:y2, x1:x2]
-            results = model.predict(window, device=0, verbose=False, conf=0.1, iou=0.8)
+            results = model.predict(window, device=0, verbose=False, conf=0.3, iou=0.8)
 
             non_zero_keypoints = (results[0].keypoints.xy != 0).sum(dim=(1, 2))
             if results[0].boxes is not None and len(results[0].boxes) > 0 \
@@ -186,7 +195,7 @@ def process_video(video_path, model_path, window_size, overlap, output_path):
 
 # Configurações
 video_path = "/path/video/name.mp4"
-model_path = "yolov8m-pose.pt"  # Substitua pelo caminho do modelo treinado
+model_path = "yolov8n-pose.pt"  # Substitua pelo caminho do modelo treinado
 output_path = "processed_video.mp4"
 window_size = 640
 overlap = 0.2
