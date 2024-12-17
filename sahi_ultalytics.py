@@ -46,7 +46,7 @@ def run(weights='yolov8n-pose.pt', source='test.mp4', view_img=False, save_img=F
     videocapture.set(cv2.CAP_PROP_POS_FRAMES, 500)
     while videocapture.isOpened():
         success, frame = videocapture.read()
-        if not success and frame_number == 1000:
+        if not success or frame_number == 100:
             break
 
         # Perform pose detection
@@ -56,24 +56,30 @@ def run(weights='yolov8n-pose.pt', source='test.mp4', view_img=False, save_img=F
                                         slice_width=512,
                                         overlap_height_ratio=0.2,
                                         overlap_width_ratio=0.2)
-        keypoint_prediction_list = results.keypoint_prediction_list
+        object_prediction_list = results.object_prediction_list
 
-        # Loop over detected keypoints
-        for keypoints in keypoint_prediction_list:
-            for keypoint in keypoints.keypoints:
-                x, y, confidence = keypoint
-                if confidence > 0.3:  # Threshold for keypoint confidence
-                    cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 0), -1)
+        boxes_list = []
+        clss_list = []
+        for ind, _ in enumerate(object_prediction_list):
+            boxes = object_prediction_list[ind].bbox.minx, object_prediction_list[ind].bbox.miny, \
+                object_prediction_list[ind].bbox.maxx, object_prediction_list[ind].bbox.maxy
+            clss = object_prediction_list[ind].category.name
+            boxes_list.append(boxes)
+            clss_list.append(clss)
 
-        # Optionally draw lines between keypoints (e.g., between specific body parts)
-        # Example: Draw lines between specific body parts (e.g., shoulders, elbows, etc.)
-        for keypoints in keypoint_prediction_list:
-            # Draw lines connecting body parts (if desired)
-            for pair in keypoints.get_keypoint_pairs():
-                x1, y1 = pair[0]
-                x2, y2 = pair[1]
-                if keypoints.get_confidence(pair[0]) > 0.3 and keypoints.get_confidence(pair[1]) > 0.3:
-                    cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
+        for box, cls in zip(boxes_list, clss_list):
+            x1, y1, x2, y2 = box
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (56, 56, 255), 2)
+            label = str(cls)
+            t_size = cv2.getTextSize(label, 0, fontScale=0.6, thickness=1)[0]
+            cv2.rectangle(frame, (int(x1), int(y1) - t_size[1] - 3), (int(x1) + t_size[0], int(y1) + 3), (56, 56, 255),
+                          -1)
+            cv2.putText(frame,
+                        label, (int(x1), int(y1) - 2),
+                        0,
+                        0.6, [255, 255, 255],
+                        thickness=1,
+                        lineType=cv2.LINE_AA)
 
         if view_img:
             cv2.imshow(Path(source).stem, frame)
@@ -105,7 +111,7 @@ def main():
     # Definindo os parâmetros diretamente
     opt = {
         'weights': 'yolov8n-pose.pt',  # Caminho do modelo
-        'source': '/path/to/input_video.mp4',
+        'source': './client/client - Video obra.mp4',  # Caminho do vídeo
         'view_img': False,  # Mostrar resultados
         'save_img': True,  # Salvar resultados
         'exist_ok': True  # Permitir sobrescrever resultados existentes

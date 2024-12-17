@@ -116,7 +116,10 @@ def process_video(video_path, model_path, window_size, overlap, output_path):
                 keypoints = adjust_keypoints(keypoints, x1, y1)
 
                 # Adicionando confiança e ID da classe
-                all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
+                if class_id is not None:
+                    all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
+                else:
+                    all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
                 all_keypoints.append(keypoints)
 
         # Verifique se all_boxes foi corretamente concatenado para evitar erros
@@ -205,7 +208,10 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
                         keypoints = adjust_keypoints(keypoints, x1, y1)
 
                         # Adicionando confiança e ID da classe
-                        all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
+                        if class_id is not None:
+                            all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
+                        else:
+                            all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
                         all_keypoints.append(keypoints)
 
                 combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
@@ -241,7 +247,7 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
 
 
 # Configurações
-video_path = "/path/video/name.mp4"
+video_path = "./client/client - Video obra.mp4"
 model_path = "yolov8n-pose.pt"  # Substitua pelo caminho do modelo treinado
 output_path = "processed_video.mp4"
 window_size = 640
