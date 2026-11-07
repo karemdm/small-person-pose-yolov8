@@ -1,3 +1,4 @@
+import argparse
 import cv2
 from ultralytics import YOLO
 import torch
@@ -156,13 +157,16 @@ def process_video(video_path, model, model_pose, output_path):
 
 
 if __name__ == "__main__":
-    # Carrega os modelos YOLO
-    model = YOLO("yolov8x.pt")
-    model_pose = YOLO("yolov8n-pose.pt")
+    parser = argparse.ArgumentParser(description="Dynamic-crop YOLOv8 pose estimation on a video.")
+    parser.add_argument("--source", required=True, help="input video path")
+    parser.add_argument("--output", default="./output_video.mp4", help="output video path")
+    parser.add_argument("--det-weights", default="yolov8x.pt", help="YOLOv8 detection weights")
+    parser.add_argument("--pose-weights", default="yolov8n-pose.pt", help="YOLOv8 pose weights")
+    args = parser.parse_args()
 
-    # Caminho do vídeo de entrada e saída
-    video_path = '/path/video/name.mp4'
-    output_path = './output_video.mp4'
+    # Carrega os modelos YOLO
+    model = YOLO(args.det_weights)
+    model_pose = YOLO(args.pose_weights)
 
     # Processa o vídeo e cria um novo vídeo com os frames processados
-    process_video(video_path, model, model_pose, output_path)
+    process_video(args.source, model, model_pose, args.output)

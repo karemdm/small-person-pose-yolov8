@@ -108,17 +108,9 @@ def parse_opt():
 
 
 def main():
-    # Definindo os parâmetros diretamente
-    opt = {
-        'weights': 'yolov8n-pose.pt',  # Caminho do modelo
-        'source': './client/client - Video obra.mp4',  # Caminho do vídeo
-        'view_img': False,  # Mostrar resultados
-        'save_img': True,  # Salvar resultados
-        'exist_ok': True  # Permitir sobrescrever resultados existentes
-    }
+    opt = parse_opt()
+    run(**vars(opt))
 
-    # Chama a função run com os parâmetros definidos
-    run(**opt)
 
 if __name__ == '__main__':
     main()

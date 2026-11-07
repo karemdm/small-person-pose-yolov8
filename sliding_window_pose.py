@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import torch
 from ultralytics import YOLO
@@ -246,13 +247,16 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
     out.release()
 
 
-# Configurações
-video_path = "./client/client - Video obra.mp4"
-model_path = "yolov8n-pose.pt"  # Substitua pelo caminho do modelo treinado
-output_path = "processed_video.mp4"
-window_size = 640
-overlap = 0.2
+def parse_args():
+    parser = argparse.ArgumentParser(description="Sliding-window YOLOv8 pose estimation on a video.")
+    parser.add_argument("--source", required=True, help="input video path")
+    parser.add_argument("--weights", default="yolov8n-pose.pt", help="YOLOv8 pose weights")
+    parser.add_argument("--output", default="processed_video.mp4", help="output video path")
+    parser.add_argument("--window-size", type=int, default=640, help="sliding window size (px)")
+    parser.add_argument("--overlap", type=float, default=0.2, help="overlap between windows (0-1)")
+    return parser.parse_args()
 
-process_video(video_path, model_path, window_size, overlap, output_path)
-# process_video_batch(video_path, model_path, window_size, overlap, output_path)
 
+if __name__ == "__main__":
+    args = parse_args()
+    process_video(args.source, args.weights, args.window_size, args.overlap, args.output)

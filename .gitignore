@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# model weights, media and outputs
+*.pt
+*.onnx
+models/
+*.mp4
+*.avi
+*.mov
+*.jpg
+runs/
+ultralytics_results_with_pose/

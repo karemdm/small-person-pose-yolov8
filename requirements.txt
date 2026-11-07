@@ -1,0 +1,11 @@
+ultralytics>=8.0
+torch
+torchvision
+opencv-python>=4.5
+numpy
+# SORT tracker (sliding_window_pose_sort.py)
+filterpy
+lap
+matplotlib
+# SAHI baseline (sahi_sliced_detection.py)
+sahi

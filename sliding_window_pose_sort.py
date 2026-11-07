@@ -1,8 +1,11 @@
+import argparse
 import cv2
 import torch
+import numpy as np
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 import torchvision.ops as ops
+from sort import *
 
 
 def sliding_window(image, window_size, overlap):
@@ -89,6 +92,10 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    # Inicializar o rastreador eepSORT
+    tracker = Sort()
+
+
     frame_number = 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 500)
     frames_batch = []
@@ -116,8 +123,7 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
                 all_boxes = []
                 all_keypoints = []
 
-                # results = model(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
-                results = model.track(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
+                results = model(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
                 num = 0
                 idx = 0
                 idx_batch = 0
@@ -138,29 +144,60 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
                         boxes = adjust_coordinates(boxes, window_positions[idx][0], window_positions[idx][1])
                         keypoints = adjust_keypoints(keypoints, window_positions[idx][0], window_positions[idx][1])
 
-                        # Adicionando confiança e ID da classe
-                        if class_id is not None:
-                            all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
-                        else:
-                            all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
+                        # Se class_id for None, adiciona como zero
+                        if class_id is None:
+                            class_id = torch.zeros_like(confidence, dtype=torch.int64)  # Criar tensor de zeros do mesmo tamanho que 'confidence'
+
+                        # Adicionando track_id na 4ª coluna
+                        all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
                         all_keypoints.append(keypoints)
 
+                    # Entra nessa condição quando terminar as janelas, ou seja, frame a frame
                     if num == (len(window_positions) // batch_size):
 
                         # Verifique se all_boxes foi corretamente concatenado para evitar erros
                         if len(all_boxes) > 0:
                             combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
 
+                            # boxes_ = combined_boxes[:, :4].cpu().numpy()  # Apenas as caixas
+                            x1, y1, x2, y2 = combined_boxes[:, :4].cpu().numpy().T  # Transpose para facilitar a operação
+
+                            confidences_ = combined_boxes[:, 5].cpu().numpy()  # Confiança
+                            # class_ = combined_boxes[:, 6].cpu().numpy()  # Classe
+
+                            boxes_ = np.stack([x1, y1, x2, y2, confidences_], axis=1)
+
+                            # Atualização do tracker
+                            track_bbs_ids = tracker.update(boxes_)
+
+                            # Extraia as colunas relevantes
+                            track_x1 = track_bbs_ids[:, 0]  # Primeira coluna do array
+                            track_last_col = track_bbs_ids[:, -1]  # Última coluna do array
+
+                            # Substitua a quarta coluna no tensor
+                            for i, row in enumerate(combined_boxes):
+                                x1_tensor = row[0].item()  # Valor de x1 no tensor
+                                # Encontre a linha correspondente em track_bbs_ids
+                                match_idx = np.where(track_x1 == x1_tensor)[0]
+                                if match_idx.size > 0:
+                                    combined_boxes[i, 4] = track_last_col[match_idx[0]]  # Substituir quarta coluna
+
+                            # Agora, remova as linhas onde a quarta coluna for zero
+                            combined_boxes = combined_boxes[combined_boxes[:, 4] != 0]
+
                             if combined_boxes is not None and combined_boxes.size(0) > 0 and \
                                 combined_keypoints is not None and not (combined_keypoints == 0).all():
-                                results = Results(
+                                results2 = Results(
                                     orig_img=frames_batch[idx_batch],
                                     boxes=combined_boxes,
                                     keypoints=combined_keypoints,
                                     names={0: "person"},
                                     path=""
                                 )
-                                plotted_frame = results.plot()
+                                plotted_frame = results2.plot()
+                                cv2.imwrite('t.jpg', plotted_frame)
+                                all_boxes = []
+                                all_keypoints = []
                             else:
                                 plotted_frame = frames_batch[idx_batch]
                         else:
@@ -169,7 +206,6 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
                         num = 0
                         idx_batch += 1
                         out.write(plotted_frame)
-                        # frame_number += 1
                         print(f"Processed frame: {frame_number}", end="\r")
                     idx += 1
 
@@ -183,11 +219,16 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
     out.release()
 
 
-# Configurações
-video_path = "./client/client - Video obra.mp4"
-model_path = "yolov8n-pose.pt"  # Substitua pelo caminho do modelo treinado
-output_path = "processed_video.mp4"
-window_size = 640
-overlap = 0.2
+def parse_args():
+    parser = argparse.ArgumentParser(description="Batched sliding-window YOLOv8 pose estimation with SORT tracking.")
+    parser.add_argument("--source", required=True, help="input video path")
+    parser.add_argument("--weights", default="yolov8n-pose.pt", help="YOLOv8 pose weights")
+    parser.add_argument("--output", default="processed_video.mp4", help="output video path")
+    parser.add_argument("--window-size", type=int, default=640, help="sliding window size (px)")
+    parser.add_argument("--overlap", type=float, default=0.2, help="overlap between windows (0-1)")
+    return parser.parse_args()
 
-process_video_batch(video_path, model_path, window_size, overlap, output_path)
+
+if __name__ == "__main__":
+    args = parse_args()
+    process_video_batch(args.source, args.weights, args.window_size, args.overlap, args.output)
