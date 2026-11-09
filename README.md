@@ -13,8 +13,14 @@ On a full high-resolution frame, far-away people shrink to a few pixels after th
 | `dynamic_crop_pose.py` | Two stages: YOLOv8x detects people on the full frame (`imgsz=1280`), then YOLOv8-pose runs on a padded crop (50 px) around each person and the keypoints are put back into the frame. | boxes + keypoints |
 | `sahi_sliced_detection.py` | Baseline with [SAHI](https://github.com/obss/sahi) sliced inference (512 × 512 slices, 20 % overlap). | boxes only |
 
-```
-frame ─► tiles / crops ─► YOLOv8-pose ─► shift to frame coordinates ─► NMS merge ─► (SORT) ─► annotated video
+```mermaid
+flowchart LR
+    A["Frame"] --> B["Tiles / crops"]
+    B --> C["YOLOv8-pose"]
+    C --> D["Shift to frame<br/>coordinates"]
+    D --> E["NMS merge"]
+    E --> F["SORT tracking<br/>(optional)"]
+    F --> G["Annotated video"]
 ```
 
 ## Installation
