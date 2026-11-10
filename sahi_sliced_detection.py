@@ -35,7 +35,11 @@ def run(weights='yolov8n-pose.pt', source='test.mp4', view_img=False, save_img=F
     # Video setup
     videocapture = cv2.VideoCapture(source)
     frame_width, frame_height = int(videocapture.get(3)), int(videocapture.get(4))
-    fps, fourcc = int(videocapture.get(5)), cv2.VideoWriter_fourcc(*'mp4v')
+    if not videocapture.isOpened():
+        raise RuntimeError(f"Cannot open video '{source}'.")
+    fps, fourcc = videocapture.get(5), cv2.VideoWriter_fourcc(*'mp4v')
+    if not fps or fps <= 0:
+        fps = 30.0  # some containers report 0 FPS
 
     # Output setup
     save_dir = increment_path(Path('ultralytics_results_with_pose') / 'exp', exist_ok)
@@ -98,7 +102,7 @@ def run(weights='yolov8n-pose.pt', source='test.mp4', view_img=False, save_img=F
 
 def parse_opt():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="SAHI sliced-inference baseline (person boxes) on a video.")
     parser.add_argument('--weights', type=str, default='yolov8n-pose.pt', help='initial weights path')
     parser.add_argument('--source', type=str, required=True, help='video file path')
     parser.add_argument('--view-img', action='store_true', help='show results')

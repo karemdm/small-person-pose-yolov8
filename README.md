@@ -8,8 +8,8 @@ On a full high-resolution frame, far-away people shrink to a few pixels after th
 | Script | Approach | Output |
 |---|---|---|
 | `sliding_window_pose.py` | Splits each frame into overlapping tiles, runs YOLOv8-pose on each tile, shifts boxes and keypoints back to frame coordinates and merges duplicates with NMS (IoU 0.5). | boxes + keypoints |
-| `sliding_window_pose_batch.py` | Same as above, but sends the tiles to the GPU in batches of 16. | boxes + keypoints |
-| `sliding_window_pose_sort.py` | Batched sliding window + [SORT](https://github.com/abewley/sort) tracking, which gives each person a persistent ID. | boxes + keypoints + track IDs |
+| `sliding_window_pose_batch.py` | Same as above, but buffers 16 frames and sends all their tiles to the model in one call. | boxes + keypoints |
+| `sliding_window_pose_sort.py` | Batched sliding window + [SORT](https://github.com/abewley/sort) tracking, which gives each person a persistent ID (SORT tracks are matched back to the detections by IoU ≥ 0.3; only confirmed tracks are drawn). | boxes + keypoints + track IDs |
 | `dynamic_crop_pose.py` | Two stages: YOLOv8x detects people on the full frame (`imgsz=1280`), then YOLOv8-pose runs on a padded crop (50 px) around each person and the keypoints are put back into the frame. | boxes + keypoints |
 | `sahi_sliced_detection.py` | Baseline with [SAHI](https://github.com/obss/sahi) sliced inference (512 × 512 slices, 20 % overlap). | boxes only |
 
@@ -70,19 +70,24 @@ python sahi_sliced_detection.py --source video.mp4 --save-img
 | `--window-size` | `640` | tile size in pixels |
 | `--overlap` | `0.2` | overlap between tiles (0–1) |
 
+`dynamic_crop_pose.py` takes `--source` (required), `--output` (default `./output_video.mp4`), `--det-weights` (default `yolov8x.pt`) and `--pose-weights` (default `yolov8n-pose.pt`).
+`sahi_sliced_detection.py` takes `--source` (required), `--weights` (default `yolov8n-pose.pt`), `--view-img`, `--save-img` and `--exist-ok`.
+
 ## Notes and limitations
 
 These are research scripts, not a packaged library.
 
-- **The frame range is fixed in the code.** All scripts start at frame 500. The sliding-window and SAHI scripts process 100 frames, and `dynamic_crop_pose.py` processes 300 frames (500–800). To change this, edit `cap.set(cv2.CAP_PROP_POS_FRAMES, 500)` and the `frame_number ==` check.
+- **The frame range is fixed in the code.** All scripts start at frame 500. The sliding-window and SAHI scripts process 100 frames (500–599), and `dynamic_crop_pose.py` processes 800 frames (500–1299). To change this, edit `cap.set(cv2.CAP_PROP_POS_FRAMES, 500)` and the `frame_number ==` check (it counts processed frames, not the absolute frame index).
 - **A GPU is assumed.** Inference uses `device=0`, and `dynamic_crop_pose.py` creates tensors on `cuda:0`.
-- `sliding_window_pose_sort.py` overwrites `t.jpg` with the latest annotated frame (debug output).
-- `sahi_sliced_detection.py` calls `download_yolov8s_model()`, which saves the YOLOv8s **detection** model as `models/<weights>` when that file does not exist yet. In that case it draws person boxes only, without keypoints. The video is saved to `ultralytics_results_with_pose/exp*/` only when `--save-img` is passed.
+- `sliding_window_pose.py` and `sliding_window_pose_batch.py` call `model.track()` on the tiles, but the per-tile track IDs are discarded (they are not meaningful across tiles); use `sliding_window_pose_sort.py` for IDs.
+- Only tiles where at least one person has 2 or more visible keypoints contribute detections.
+- If the input video reports 0 FPS, the output is written at 30 FPS.
+- `sahi_sliced_detection.py` calls `download_yolov8s_model()`, which saves the YOLOv8s **detection** model as `models/<weights>` when that file does not exist yet. In that case it draws person boxes only, without keypoints. The video is saved to `ultralytics_results_with_pose/exp*/` only when `--save-img` is passed. The script uses the SAHI 0.11-style API (`sahi.utils.yolov8`, `model_type='yolov8'`); newer SAHI releases may have renamed these, in which case pin an older `sahi` version.
 
 ## Project structure
 
 ```
-sliding_window_pose.py         # sliding-window pose estimation
+sliding_window_pose.py         # sliding-window pose estimation (+ helpers shared by the two scripts below)
 sliding_window_pose_batch.py   # batched sliding window
 sliding_window_pose_sort.py    # batched sliding window + SORT
 dynamic_crop_pose.py           # detector + dynamic crop + pose
@@ -93,7 +98,7 @@ requirements.txt
 
 ## Credits and license
 
-- `sort.py` is **SORT: A Simple, Online and Realtime Tracker** by Alex Bewley (GPL-3.0), included without changes.
+- `sort.py` is **[SORT: A Simple, Online and Realtime Tracker](https://github.com/abewley/sort)** by Alex Bewley, licensed under **GPL-3.0** (see the header of the file). It is included unchanged except that two display-only lines (`matplotlib.use('TkAgg')` and `from skimage import io`) are commented out. GPL-3.0 code may be combined with AGPL-3.0 code (GPL-3.0 section 13); `sort.py` itself stays under GPL-3.0.
 - Uses [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) (AGPL-3.0) and [SAHI](https://github.com/obss/sahi) (MIT).
 
 This repository is released under the [AGPL-3.0](LICENSE).

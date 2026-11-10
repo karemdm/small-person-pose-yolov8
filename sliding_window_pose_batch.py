@@ -1,100 +1,48 @@
 import argparse
 import cv2
-import torch
 from ultralytics import YOLO
-from ultralytics.engine.results import Results
-import torchvision.ops as ops
+
+# Shared helpers (tiling, coordinate shift, NMS merge, drawing)
+from sliding_window_pose import (
+    collect_tile_detections,
+    open_video_io,
+    render_frame,
+    sliding_window,
+)
 
 
-def sliding_window(image, window_size, overlap):
+def process_batch(model, frames_batch, window_batch, window_positions, out):
     """
-    Gera coordenadas de janelas deslizantes na imagem,
-    garantindo que os pixels das bordas também sejam processados.
+    Run the model once on all tiles of the buffered frames, then merge and
+    draw the detections frame by frame and write the frames in order.
     """
-    step = int(window_size * (1 - overlap))
-    h, w, _ = image.shape
+    windows_per_frame = len(window_positions) // len(frames_batch)
+    results = model.track(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
 
-    for y in range(0, h, step):
-        for x in range(0, w, step):
-            x1 = x
-            y1 = y
-            x2 = min(x + window_size, w)  # Garante que a janela não exceda a largura da imagem
-            y2 = min(y + window_size, h)  # Garante que a janela não exceda a altura da imagem
-            yield x1, y1, x2, y2
-
-
-def adjust_coordinates(detections, x_offset, y_offset):
-    """
-    Ajusta as coordenadas das detecções para as dimensões originais.
-    """
-    if detections is None or detections.size(0) == 0:
-        return detections
-
-    detections = detections.clone()
-    detections[:, [0, 2]] += x_offset  # Ajusta x_min e x_max
-    detections[:, [1, 3]] += y_offset  # Ajusta y_min e y_max
-    return detections
-
-
-def adjust_keypoints(keypoints, x_offset, y_offset):
-    """
-    Ajusta as coordenadas dos keypoints para as dimensões originais,
-    ignorando valores de 0 (em x e y).
-    """
-    if keypoints is None or keypoints.size(0) == 0:
-        return keypoints
-
-    keypoints = keypoints.clone()
-
-    # Somar o offset apenas onde os valores de keypoints não são 0
-    keypoints[:, :, 0] = torch.where(keypoints[:, :, 0] != 0, keypoints[:, :, 0] + x_offset, keypoints[:, :, 0])
-    keypoints[:, :, 1] = torch.where(keypoints[:, :, 1] != 0, keypoints[:, :, 1] + y_offset, keypoints[:, :, 1])
-
-    return keypoints
-
-
-def merge_detections(all_boxes, all_keypoints, iou_threshold=0.5):
-    target_device = all_boxes[0].device if len(all_boxes) > 0 else 'cpu'
-
-    # Move boxes e keypoints para o mesmo dispositivo
-    all_boxes = [box.to(target_device) for box in all_boxes]
-    all_keypoints = [keypoint.to(target_device) for keypoint in all_keypoints]
-
-    # Concatena as boxes e keypoints
-    combined_boxes = torch.cat(all_boxes, dim=0) if len(all_boxes) > 0 else torch.empty(0, device=target_device)
-    combined_keypoints = torch.cat(all_keypoints, dim=0) if len(all_keypoints) > 0 else torch.empty(0, device=target_device)
-
-    # Certifique-se de que a caixa tenha apenas 4 colunas: [x1, y1, x2, y2]
-    # Se a caixa tiver mais de 4 colunas, vamos considerar apenas as primeiras 4 colunas para NMS.
-    boxes = combined_boxes[:, :4]  # Seleciona apenas as 4 primeiras colunas (coordenadas da caixa)
-    scores = combined_boxes[:, 5]  # Assume que a 5ª coluna é a confiança
-
-    # Filtragem por IoU (remove boxes com alta sobreposição)
-    keep = ops.nms(boxes, scores, iou_threshold)
-    filtered_boxes = combined_boxes[keep]
-    filtered_keypoints = combined_keypoints[keep]
-
-    return filtered_boxes, filtered_keypoints
+    for frame_idx, frame in enumerate(frames_batch):
+        all_boxes = []
+        all_keypoints = []
+        start = frame_idx * windows_per_frame
+        for idx in range(start, start + windows_per_frame):
+            x_offset, y_offset = window_positions[idx]
+            collect_tile_detections(results[idx], x_offset, y_offset, all_boxes, all_keypoints)
+        out.write(render_frame(frame, all_boxes, all_keypoints))
 
 
 def process_video_batch(video_path, model_path, window_size, overlap, output_path, batch_size=16):
     """
-    Processa o vídeo aplicando o modelo YOLOv8-Pose em janelas deslizantes usando batches.
+    Sliding-window YOLOv8-pose where the tiles of `batch_size` frames are sent to the model in one call.
     """
+    cap, out = open_video_io(video_path, output_path)
+    if cap is None:
+        return
     model = YOLO(model_path)
-    cap = cv2.VideoCapture(video_path)
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     frame_number = 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 500)
     frames_batch = []
-    window_batch = []  # Acumula todas as janelas para processamento em batch
-    window_positions = []  # Salva as posições (x1, y1) de cada janela
+    window_batch = []  # tiles of all buffered frames
+    window_positions = []  # (x1, y1) offset of each tile
 
     while True:
         ret, frame = cap.read()
@@ -104,80 +52,19 @@ def process_video_batch(video_path, model_path, window_size, overlap, output_pat
         frames_batch.append(frame)
         frame_number += 1
 
-        # Gerar janelas deslizantes para o frame atual
         for x1, y1, x2, y2 in sliding_window(frame, window_size, overlap):
-            window = frame[y1:y2, x1:x2]
-            window_batch.append(window)
+            window_batch.append(frame[y1:y2, x1:x2])
             window_positions.append((x1, y1))
 
-        # Processar quando atingimos o batch_size ou o final do vídeo
-        if len(frames_batch) == batch_size or not ret:
-            # Processar TODAS as janelas acumuladas em batch
-            if window_batch:
-                all_boxes = []
-                all_keypoints = []
+        if len(frames_batch) == batch_size:
+            process_batch(model, frames_batch, window_batch, window_positions, out)
+            print(f"Processed frame: {frame_number}", end="\r")
+            frames_batch, window_batch, window_positions = [], [], []
 
-                # results = model(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
-                results = model.track(window_batch, device=0, verbose=False, conf=0.3, iou=0.8)
-                num = 0
-                idx = 0
-                idx_batch = 0
-
-                for result in results:
-                    num += 1
-                    non_zero_keypoints = (result.keypoints.xy != 0).sum(dim=(1, 2))
-                    if result.boxes is not None and len(result.boxes) > 0 \
-                            and (non_zero_keypoints >= 2).any():
-                        boxes = result.boxes.xyxy
-                        keypoints = result.keypoints.xy
-
-                        # Adicionando confiança e ID da classe
-                        confidence = result.boxes.conf  # Confiança das detecções
-                        class_name = result.boxes.cls # num das classes (no caso, pessoas)
-                        class_id = result.boxes.id # ID do tracker
-
-                        boxes = adjust_coordinates(boxes, window_positions[idx][0], window_positions[idx][1])
-                        keypoints = adjust_keypoints(keypoints, window_positions[idx][0], window_positions[idx][1])
-
-                        # Adicionando confiança e ID da classe
-                        if class_id is not None:
-                            all_boxes.append(torch.cat((boxes, class_id.unsqueeze(1), confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
-                        else:
-                            all_boxes.append(torch.cat((boxes, confidence.unsqueeze(1), class_name.unsqueeze(1)), dim=1))
-                        all_keypoints.append(keypoints)
-
-                    if num == (len(window_positions) // batch_size):
-
-                        # Verifique se all_boxes foi corretamente concatenado para evitar erros
-                        if len(all_boxes) > 0:
-                            combined_boxes, combined_keypoints = merge_detections(all_boxes, all_keypoints)
-
-                            if combined_boxes is not None and combined_boxes.size(0) > 0 and \
-                                combined_keypoints is not None and not (combined_keypoints == 0).all():
-                                results = Results(
-                                    orig_img=frames_batch[idx_batch],
-                                    boxes=combined_boxes,
-                                    keypoints=combined_keypoints,
-                                    names={0: "person"},
-                                    path=""
-                                )
-                                plotted_frame = results.plot()
-                            else:
-                                plotted_frame = frames_batch[idx_batch]
-                        else:
-                            plotted_frame = frames_batch[idx_batch]
-
-                        num = 0
-                        idx_batch += 1
-                        out.write(plotted_frame)
-                        # frame_number += 1
-                        print(f"Processed frame: {frame_number}", end="\r")
-                    idx += 1
-
-            # Limpar batches
-            frames_batch = []
-            window_batch = []
-            window_positions = []
+    # Last, partial batch
+    if frames_batch:
+        process_batch(model, frames_batch, window_batch, window_positions, out)
+        print(f"Processed frame: {frame_number}", end="\r")
 
     print("\nProcessing complete.")
     cap.release()
